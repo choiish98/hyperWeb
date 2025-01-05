@@ -5,9 +5,11 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <sys/epoll.h>
 
 #define PORT 8080
 #define BUFFER_SIZE 1024
+#define MAX_EVENTS 10
 
 void set_nonblocking(int s) {
     int flags = fcntl(s, F_GETFL, 0);
@@ -26,10 +28,20 @@ void handle_client(int c) {
     char buffer[BUFFER_SIZE];
     int bytes_read;
 
-    // Read the request (not fully parsing for simplicity)
+    // Read the reque	st (not fully parsing for simplicity)
     bytes_read = read(c, buffer, BUFFER_SIZE - 1);
     if (bytes_read < 0) {
-        perror("Error reading request");
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            // No data available, continue processing later
+            return;
+        } else {
+            perror("Error reading request");
+            close(c);
+            return;
+        }
+    } else if (bytes_read == 0) {
+        // Client disconnected
+        printf("Client disconnected\n");
         close(c);
         return;
     }
@@ -75,7 +87,9 @@ void handle_client(int c) {
 
 int main(void) {
     int s;
+	int epoll_fd;
     struct sockaddr_in saddr;
+    struct epoll_event event, events[MAX_EVENTS];
 
     // Create a socket
     s = socket(AF_INET, SOCK_STREAM, 0);
@@ -108,24 +122,57 @@ int main(void) {
 
     printf("Server is running on port %d...\n", PORT);
 
+    // Create an epoll instance
+    epoll_fd = epoll_create1(0);
+    if (epoll_fd == -1) {
+        perror("Epoll creation failed");
+        close(s);
+        exit(EXIT_FAILURE);
+    }
+
+    // Add the server socket to the epoll instance
+    event.events = EPOLLIN;
+    event.data.fd = s;
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, s, &event) == -1) {
+        perror("Epoll add failed");
+        close(s);
+        exit(EXIT_FAILURE);
+    }
+
     // Main loop to accept and handle clients
     while (1) {
-		struct sockaddr_in caddr;
-        socklen_t clen = sizeof(caddr);
-        int c = accept(s, (struct sockaddr *) &caddr, &clen);
-
-        if (c == -1) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                // No pending connections; non-blocking mode
-                continue;
-            } else {
-                perror("Accept failed");
-                break;
-            }
+		int n = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
+        if (n == -1) {
+            perror("Epoll wait failed");
+            close(s);
+            exit(EXIT_FAILURE);
         }
 
-        set_nonblocking(c);
-        handle_client(c);
+        for (int i = 0; i < n; i++) {
+            if (events[i].data.fd == s) {
+                // Accept new connections
+                struct sockaddr_in caddr;
+                socklen_t clen = sizeof(caddr);
+                int c = accept(s, (struct sockaddr *)&caddr, &clen);
+                if (c == -1) {
+                    perror("Accept failed");
+                    continue;
+                }
+
+                set_nonblocking(c);
+
+                event.events = EPOLLIN | EPOLLET;
+                event.data.fd = c;
+                if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, c, &event) == -1) {
+                    perror("Epoll add client failed");
+                    close(c);
+                    continue;
+                }
+            } else {
+                // Handle client requests
+                handle_client(events[i].data.fd);
+            }
+        }
     }
 
     // Close the server socket
