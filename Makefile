@@ -1,6 +1,6 @@
 .PHONY: clean
 
-CFLAGS := -Wall -g -O3 -Werror
+CFLAGS := -Wall -g -O3 -Werror -pthread
 MAKE := make
 CC := gcc
 MSG := @echo
@@ -14,7 +14,7 @@ server.o: server.c
 
 server: server.o
 	$(MSG) "	LD $<"
-	$(HIDE) $(CC) $< -o $@
+	$(HIDE) $(CC) $< -o $@ $(CFLAGS)
 
 clean:
 	$(MSG) "	CLEAN server"
