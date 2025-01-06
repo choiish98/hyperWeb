@@ -10,11 +10,11 @@ default: server
 
 server.o: server.c
 	$(MSG) "	CC $<"
-	$(HIDE) $(CC) -c $< $(CFLAGS) 
+	$(HIDE) ${CC} -c $< ${CFLAGS}
 
 server: server.o
 	$(MSG) "	LD $<"
-	$(HIDE) $(CC) $< -o $@ $(CFLAGS)
+	$(HIDE) ${CC} $< -o $@ ${CFLAGS}
 
 clean:
 	$(MSG) "	CLEAN server"
