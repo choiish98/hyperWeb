@@ -22,9 +22,6 @@
 
 typedef struct
 {
-	int keep_alive;
-	int rsp_sent;
-
 	char fcontent[FILE_SIZE];
 	long int fsize;
 } ctx_t;
@@ -46,12 +43,6 @@ void set_nonblocking(int socket)
         perror("fcntl set");
         exit(EXIT_FAILURE);
     }
-}
-
-void clean_ctx(ctx_t *ctx)
-{
-	ctx->keep_alive = 0;
-	ctx->rsp_sent = 0;
 }
 
 void close_connection(int epoll_fd, int socket_id)
@@ -83,31 +74,7 @@ int accept_connection(task_t *task, int server_socket)
 	return client_socket;
 }
 
-int handle_write(int client_socket, task_t *task, ctx_t *ctx)
-{
-	if (!ctx->rsp_sent) {
-		return 0;
-	}
-
-	if (write(client_socket, ctx->fcontent, ctx->fsize) < 0) {
-		perror("Error writing request");
-	}
-
-	if (ctx->keep_alive) {
-		struct epoll_event event;
-		event.events = EPOLLIN;
-		event.data.fd = client_socket;
-		epoll_ctl(task->epoll_fd, EPOLL_CTL_MOD, client_socket, &event);
-
-		clean_ctx(ctx);
-	} else {
-		close_connection(task->epoll_fd, client_socket);
-	}
-
-	return ctx->fsize;
-}
-
-int handle_read(int client_socket, task_t *task, ctx_t *ctx)
+int handle_client(int client_socket, task_t *task, ctx_t *ctx)
 {
 	char buffer[BUFFER_SIZE];
     int bytes_read = read(client_socket, buffer, BUFFER_SIZE - 1);
@@ -115,7 +82,7 @@ int handle_read(int client_socket, task_t *task, ctx_t *ctx)
         return bytes_read;
     }
 
-	/* http request handling */
+	/* TODO: http request handling */
 
     FILE *file = fopen("index.html", "r");
     if (!file) {
@@ -130,27 +97,27 @@ int handle_read(int client_socket, task_t *task, ctx_t *ctx)
     ctx->fsize = fread(ctx->fcontent, 1, FILE_SIZE, file);
     fclose(file);
 
-    char response[HTTP_HEADER_LEN];
+	time_t now;
+	time(&now);
+
+	char date[128];
+	strftime(date, 128, "%a, %d %b %Y %X GMT", gmtime(&now));
+
+    char response[ctx->fsize + HTTP_HEADER_LEN];
     snprintf(response, sizeof(response),
              "HTTP/1.1 200 OK\r\n"
+			 "Date: %s\r\n"
              "Content-Length: %zu\r\n"
              "Content-Type: text/html\r\n"
              "Connection: close\r\n"
-             "\r\n",
-             ctx->fsize);
+             "\r\n%s",
+             date, ctx->fsize, ctx->fcontent);
 
     if (write(client_socket, response, strlen(response)) < 0) {
 		perror("Error writing request");
 	}
 
-	ctx->rsp_sent = true;
-
-	struct epoll_event event;
-	event.events = EPOLLIN | EPOLLOUT;
-	event.data.fd = client_socket;
-	epoll_ctl(task->epoll_fd, EPOLL_CTL_MOD, client_socket, &event);
-
-	handle_write(client_socket, task, ctx);
+	close_connection(task->epoll_fd, client_socket);
 
 	return bytes_read;
 }
@@ -256,7 +223,7 @@ void *server_thread(void *arg)
 						core, events[i].data.fd);
 				close_connection(epoll_fd, events[i].data.fd);
 			} else if (events[i].events & EPOLLIN) {
-				int ret = handle_read(events[i].data.fd, task,
+				int ret = handle_client(events[i].data.fd, task,
 						&task->ctx[events[i].data.fd]);
 				if (ret == 0) {
 					close_connection(epoll_fd, events[i].data.fd);
@@ -266,14 +233,6 @@ void *server_thread(void *arg)
 					}
 					printf("[CPU %d]: Error occured at socket %d\n",
 							core, events[i].data.fd);
-				}
-            } else if (events[i].events & EPOLLOUT) {
-				ctx_t *ctx = &task->ctx[events[i].data.fd];
-				if (ctx->rsp_sent) {
-					handle_write(events[i].data.fd, task, ctx);
-				} else {
-					printf("Socket %d: Response header not sent yet\n",
-							events[i].data.fd);
 				}
 			} else {
 				assert(0);
